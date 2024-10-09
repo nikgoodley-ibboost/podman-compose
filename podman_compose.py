@@ -1198,6 +1198,8 @@ async def container_to_args(compose, cnt, detached=True):
         raise ValueError("'healthcheck' must be a key-value mapping")
     healthcheck_disable = healthcheck.get("disable", False)
     healthcheck_test = healthcheck.get("test", None)
+    # currently only supports the starttest being defined in same form as the base test though deserves refactoring
+    healthcheck_starttest = healthcheck.get("x-podman.start_test", None)
     if healthcheck_disable:
         healthcheck_test = ["NONE"]
     if healthcheck_test:
@@ -1205,9 +1207,20 @@ async def container_to_args(compose, cnt, detached=True):
         if isinstance(healthcheck_test, str):
             # podman does not add shell to handle command with whitespace
             podman_args.extend([
-                "--healthcheck-command",
-                "/bin/sh -c " + cmd_quote(healthcheck_test),
+                "--health-cmd",
+                "/bin/sh -c " + cmd_quote(healthcheck_test)
             ])
+            # we need to have a --health-start-cmd test defined for the startup period to work, so if not defined make it the same
+            if not healthcheck_starttest:
+                podman_args.extend([
+                    "--health-startup-cmd",
+                    "/bin/sh -c " + cmd_quote(healthcheck_test)
+                ])
+            else:
+                podman_args.extend([
+                    "--health-startup-cmd",
+                    "/bin/sh -c " + cmd_quote(healthcheck_starttest)
+                ])
         elif is_list(healthcheck_test):
             healthcheck_test = healthcheck_test.copy()
             # If it's a list, first item is either NONE, CMD or CMD-SHELL.
@@ -1216,12 +1229,22 @@ async def container_to_args(compose, cnt, detached=True):
                 podman_args.append("--no-healthcheck")
             elif healthcheck_type == "CMD":
                 cmd_q = "' '".join([cmd_quote(i) for i in healthcheck_test])
-                podman_args.extend(["--healthcheck-command", "/bin/sh -c " + cmd_q])
+                podman_args.extend(["--health-cmd", "/bin/sh -c " + cmd_q])
+                if not healthcheck_starttest:
+                    podman_args.extend(["--health-startup-cmd", "/bin/sh -c " + cmd_q])
+                else:
+                    cmd_q = "' '".join([cmd_quote(i) for i in healthcheck_starttest])
+                    podman_args.extend(["--health-startup-cmd", "/bin/sh -c " + cmd_q])
             elif healthcheck_type == "CMD-SHELL":
                 if len(healthcheck_test) != 1:
                     raise ValueError("'CMD_SHELL' takes a single string after it")
                 cmd_q = cmd_quote(healthcheck_test[0])
-                podman_args.extend(["--healthcheck-command", "/bin/sh -c " + cmd_q])
+                podman_args.extend(["--health-cmd", "/bin/sh -c " + cmd_q])
+                if not healthcheck_starttest:
+                    podman_args.extend(["--health-startup-command", "/bin/sh -c " + cmd_q])
+                else:
+                    cmd_q = cmd_quote(healthcheck_starttest[0])
+                    podman_args.extend(["--health-startup-command", "/bin/sh -c " + cmd_q])
             else:
                 raise ValueError(
                     f"unknown healthcheck test type [{healthcheck_type}],\
@@ -1232,15 +1255,23 @@ async def container_to_args(compose, cnt, detached=True):
 
     # interval, timeout and start_period are specified as durations.
     if "interval" in healthcheck:
-        podman_args.extend(["--healthcheck-interval", healthcheck["interval"]])
+        podman_args.extend(["--health-interval", healthcheck["interval"]])
     if "timeout" in healthcheck:
-        podman_args.extend(["--healthcheck-timeout", healthcheck["timeout"]])
+        podman_args.extend(["--health-timeout", healthcheck["timeout"]])
     if "start_period" in healthcheck:
-        podman_args.extend(["--healthcheck-start-period", healthcheck["start_period"]])
-
+        podman_args.extend(["--health-start-period", healthcheck["start_period"]])
+    if "start_interval" in healthcheck:
+        podman_args.extend(["--health-startup-interval", healthcheck["start_interval"]])
     # convert other parameters to string
     if "retries" in healthcheck:
-        podman_args.extend(["--healthcheck-retries", str(healthcheck["retries"])])
+        podman_args.extend(["--health-retries", str(healthcheck["retries"])])
+    # for the following, there are no equivalents in the Docker compose spec but are supported in Podman https://github.com/compose-spec/compose-spec/blob/main/05-services.md#healthcheck
+    if "x-podman.start_retries" in healthcheck:
+        podman_args.extend(["--health-startup-retries", str(healthcheck["x-podman.start_retries"])])
+    if "x-podman.start_timeout" in healthcheck:
+        podman_args.extend(["--health-startup-timeout", healthcheck["x-podman.start_timeout"]])
+    if "x-podman.start_success" in healthcheck:
+        podman_args.extend(["--health-startup-success", healthcheck["x-podman.start_success"]])
 
     # handle podman extension
     if 'x-podman' in cnt:
